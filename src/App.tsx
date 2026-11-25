@@ -1,27 +1,43 @@
-
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   Activity, AlertTriangle, ArrowDownToLine, ArrowLeftRight,
-  ArrowUpFromLine, BarChart3, Bell, Boxes, BriefcaseBusiness,
-  Check, ChevronDown, CircleDollarSign, Download, LayoutDashboard,
+  ArrowUpFromLine, BarChart3, Bell, Boxes,
+  Check, CircleDollarSign, Download, Layers, LayoutDashboard,
   LogIn, LogOut, Moon, Package, Pencil, Plus, Search, Settings,
   Sparkles, Sun, Tags, Trash2, Truck, Users, X
 } from 'lucide-react'
+import { api, type ApiUser } from './services/api'
 
 type Page =
   | 'Dashboard' | 'Items' | 'Categories' | 'Stock In'
   | 'Stock Out' | 'Transfers' | 'Suppliers' | 'Reports'
   | 'AI Assistant' | 'Settings' | 'Upgrade'
 
+type Role = 'Admin' | 'Staff' | 'Warehouse Manager' | 'Business Manager'
+
 type Item = {
   id: number
   name: string
   sku: string
   category: string
+  subCategory?: string
   quantity: number
   minimum: number
   price: number
   cost: number
+}
+
+type Category = {
+  id: string
+  name: string
+  description: string // optional in the UI, empty string when not provided
+}
+
+type SubCategory = {
+  id: string
+  categoryId: string
+  name: string
+  description: string // optional
 }
 
 type Transaction = {
@@ -44,7 +60,53 @@ type Supplier = {
 type Account = {
   name: string
   email: string
-  password: string
+  role: Role
+}
+
+// The backend decides each user's role; map its value to our four roles.
+const normalizeRole = (value?: string): Role => {
+  const key = (value ?? '').toLowerCase().replace(/[\s_-]/g, '')
+  if (key === 'admin') return 'Admin'
+  if (key === 'warehousemanager') return 'Warehouse Manager'
+  if (key === 'businessmanager' || key === 'businessowner') return 'Business Manager'
+  return 'Staff'
+}
+
+const toAccount = (user: ApiUser): Account => ({
+  name: (user.firstName + ' ' + user.lastName).trim(),
+  email: user.email,
+  role: normalizeRole(user.role)
+})
+
+// ---------------------------------------------------------------------------
+// Role permissions (frontend only – the backend must enforce the same rules)
+// ---------------------------------------------------------------------------
+const pageAccess: Record<Role, Page[]> = {
+  Admin: [
+    'Dashboard', 'Items', 'Categories', 'Stock In', 'Stock Out',
+    'Transfers', 'Suppliers', 'Reports', 'AI Assistant', 'Settings', 'Upgrade'
+  ],
+  'Business Manager': [
+    'Dashboard', 'Items', 'Categories', 'Suppliers', 'Reports',
+    'AI Assistant', 'Settings', 'Upgrade'
+  ],
+  'Warehouse Manager': [
+    'Dashboard', 'Items', 'Categories', 'Stock In', 'Stock Out',
+    'Transfers', 'Suppliers', 'Settings'
+  ],
+  Staff: ['Dashboard', 'Items', 'Stock In', 'Stock Out', 'Settings']
+}
+
+const permissions: Record<Role, {
+  manageCategories: boolean
+  manageItems: boolean
+  deleteItems: boolean
+  manageSuppliers: boolean
+}> = {
+  Admin: { manageCategories: true, manageItems: true, deleteItems: true, manageSuppliers: true },
+  'Business Manager': { manageCategories: false, manageItems: false, deleteItems: false, manageSuppliers: true },
+  'Warehouse Manager': { manageCategories: false, manageItems: true, deleteItems: false, manageSuppliers: true },
+  Staff: { manageCategories: false, manageItems: false, deleteItems: false, manageSuppliers: false }
 }
 
 const readStore = <T,>(key: string, fallback: T): T => {
@@ -74,10 +136,6 @@ const initialItems: Item[] = [
   { id: 8, name: 'HDMI Cable 2m', sku: 'TD-008', category: 'Accessories', quantity: 34, minimum: 10, price: 250, cost: 130 }
 ]
 
-const initialCategories = [
-  'Electronics', 'Accessories', 'Stationery', 'Office Supplies'
-]
-
 const navigation: { name: Page; icon: typeof LayoutDashboard }[] = [
   { name: 'Dashboard', icon: LayoutDashboard },
   { name: 'Items', icon: Package },
@@ -100,14 +158,13 @@ const buttonSecondary =
 const inputClass =
   'w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:focus:ring-blue-900'
 
+const labelClass =
+  'mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300'
+
 function App() {
   // Authentication
-  const [accounts, setAccounts] = useState<Account[]>(() =>
-    readStore('accounts', [])
-  )
-  const [currentUser, setCurrentUser] = useState<Account | null>(() =>
-    readStore('current-user', null)
-  )
+  const [currentUser, setCurrentUser] = useState<Account | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
   const [authName, setAuthName] = useState('')
   const [authEmail, setAuthEmail] = useState('')
@@ -127,9 +184,8 @@ function App() {
   const [suppliers, setSuppliers] = useState<Supplier[]>(() =>
     readStore('suppliers', [])
   )
-  const [categories, setCategories] = useState<string[]>(() =>
-    readStore('categories', initialCategories)
-  )
+  const [categories, setCategories] = useState<Category[]>([])
+  const [subCategories, setSubCategories] = useState<SubCategory[]>([])
   const [dark, setDark] = useState(() => readStore('dark', false))
   const [search, setSearch] = useState('')
   const [toast, setToast] = useState('')
@@ -139,7 +195,11 @@ function App() {
   const [selectedItem, setSelectedItem] = useState('')
   const [movementQuantity, setMovementQuantity] = useState('1')
   const [movementDetail, setMovementDetail] = useState('')
-  const [categoryName, setCategoryName] = useState('')
+  const [categoryForm, setCategoryForm] = useState({ name: '', description: '' })
+  const [showSubForm, setShowSubForm] = useState(false)
+  const [subForm, setSubForm] = useState({
+    categoryId: '', name: '', description: ''
+  })
   const [supplierForm, setSupplierForm] = useState({
     name: '', contact: '', email: ''
   })
@@ -150,19 +210,19 @@ function App() {
     readStore('store-name', 'TinyDepot Store')
   )
   const [itemForm, setItemForm] = useState({
-    name: '', sku: '', category: 'Electronics',
+    name: '', sku: '', category: 'Electronics', subCategory: '',
     quantity: '0', minimum: '5', price: '0', cost: '0'
   })
 
+  const role: Role = currentUser?.role ?? 'Staff'
+  const can = permissions[role]
+  const allowedPages = pageAccess[role]
+  const visibleNavigation = navigation.filter(entry =>
+    allowedPages.includes(entry.name)
+  )
+  const canUpgrade = allowedPages.includes('Upgrade')
+
   // Persist application data
-  useEffect(() => {
-    localStorage.setItem('tinydepot-accounts', JSON.stringify(accounts))
-  }, [accounts])
-
-  useEffect(() => {
-    localStorage.setItem('tinydepot-current-user', JSON.stringify(currentUser))
-  }, [currentUser])
-
   useEffect(() => {
     localStorage.setItem('tinydepot-items', JSON.stringify(items))
   }, [items])
@@ -174,10 +234,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem('tinydepot-suppliers', JSON.stringify(suppliers))
   }, [suppliers])
-
-  useEffect(() => {
-    localStorage.setItem('tinydepot-categories', JSON.stringify(categories))
-  }, [categories])
 
   useEffect(() => {
     localStorage.setItem('tinydepot-dark', JSON.stringify(dark))
@@ -198,79 +254,109 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [toast])
 
-  // Authentication handlers
-  const handleSignUp = (event: FormEvent<HTMLFormElement>) => {
+  // Restore the login session when the page opens
+  useEffect(() => {
+    api.me()
+      .then(user => setCurrentUser(toAccount(user)))
+      .catch(() => setCurrentUser(null))
+      .finally(() => setAuthLoading(false))
+  }, [])
+
+  const apiMessage = (error: unknown, fallback: string) =>
+    error instanceof Error ? error.message : fallback
+
+  // Load categories and subcategories from the backend
+  const loadCatalog = async () => {
+    try {
+      const [categoryList, subCategoryList] = await Promise.all([
+        api.getCategories(),
+        api.getSubCategories()
+      ])
+      setCategories(categoryList.map(entry => ({
+        id: entry.id, name: entry.name, description: entry.description ?? ''
+      })))
+      setSubCategories(subCategoryList.map(entry => ({
+        id: entry.id,
+        categoryId: entry.categoryId,
+        name: entry.name,
+        description: entry.description ?? ''
+      })))
+    } catch (error) {
+      notify(apiMessage(error, 'Could not load categories.'))
+    }
+  }
+
+  useEffect(() => {
+    if (currentUser) loadCatalog()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.email])
+
+  // Authentication handlers (backend API)
+  const handleSignUp = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setAuthError('')
     setAuthSuccess('')
 
-    const name = authName.trim()
+    const parts = authName.trim().split(/\s+/)
+    const firstName = parts[0] ?? ''
+    const lastName = parts.slice(1).join(' ')
     const email = authEmail.trim().toLowerCase()
 
-    if (!name || !email || !authPassword || !confirmPassword) {
-      setAuthError('Please complete all fields.')
+    if (!firstName || !lastName || !email || !authPassword || !confirmPassword) {
+      setAuthError('Please complete all fields, including your first and last name.')
       return
     }
-
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       setAuthError('Please enter a valid email address.')
       return
     }
-
     if (authPassword.length < 6) {
       setAuthError('Your password must contain at least 6 characters.')
       return
     }
-
     if (authPassword !== confirmPassword) {
       setAuthError('Your passwords do not match.')
       return
     }
 
-    if (accounts.some(account => account.email.toLowerCase() === email)) {
-      setAuthError('An account with this email already exists.')
-      return
+    try {
+      await api.register({ firstName, lastName, email, password: authPassword })
+      setAuthMode('signin')
+      setAuthName('')
+      setAuthPassword('')
+      setConfirmPassword('')
+      setAuthSuccess('Your account has been created. You can now sign in.')
+    } catch (error) {
+      setAuthError(apiMessage(error, 'Could not create the account.'))
     }
-
-    const newAccount: Account = {
-      name,
-      email,
-      password: authPassword
-    }
-
-    setAccounts(previous => [...previous, newAccount])
-    setAuthMode('signin')
-    setAuthName('')
-    setAuthPassword('')
-    setConfirmPassword('')
-    setAuthSuccess('Your account has been created. You can now sign in.')
   }
 
-  const handleSignIn = (event: FormEvent<HTMLFormElement>) => {
+  const handleSignIn = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setAuthError('')
     setAuthSuccess('')
 
-    const email = authEmail.trim().toLowerCase()
-    const account = accounts.find(
-      user =>
-        user.email.toLowerCase() === email &&
-        user.password === authPassword
-    )
-
-    if (!account) {
-      setAuthError('Incorrect email or password. Please try again.')
-      return
+    try {
+      await api.login(authEmail.trim().toLowerCase(), authPassword)
+      const user = await api.me()
+      setCurrentUser(toAccount(user))
+      setPage('Dashboard')
+      setAuthEmail('')
+      setAuthPassword('')
+    } catch (error) {
+      setAuthError(apiMessage(error, 'Incorrect email or password. Please try again.'))
     }
-
-    setCurrentUser(account)
-    setPage('Dashboard')
-    setAuthEmail('')
-    setAuthPassword('')
   }
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    try {
+      await api.logout()
+    } catch {
+      // sign out locally even if the request fails
+    }
     setCurrentUser(null)
+    setCategories([])
+    setSubCategories([])
     setPage('Dashboard')
     setSearch('')
     setShowNotifications(false)
@@ -302,27 +388,31 @@ function App() {
     return items.filter(item =>
       item.name.toLowerCase().includes(query) ||
       item.sku.toLowerCase().includes(query) ||
-      item.category.toLowerCase().includes(query)
+      item.category.toLowerCase().includes(query) ||
+      (item.subCategory ?? '').toLowerCase().includes(query)
     )
   }, [items, search])
 
   const notify = (message: string) => setToast(message)
 
+  const defaultItemForm = () => ({
+    name: '', sku: '', category: categories[0]?.name || '', subCategory: '',
+    quantity: '0', minimum: '5', price: '0', cost: '0'
+  })
+
   const resetItemForm = () => {
-    setItemForm({
-      name: '', sku: '', category: categories[0] || 'Electronics',
-      quantity: '0', minimum: '5', price: '0', cost: '0'
-    })
+    setItemForm(defaultItemForm())
     setEditing(null)
     setShowItemForm(false)
   }
 
   const openAddItem = () => {
+    if (!can.manageItems) {
+      notify('Your role cannot add items.')
+      return
+    }
     setEditing(null)
-    setItemForm({
-      name: '', sku: '', category: categories[0] || 'Electronics',
-      quantity: '0', minimum: '5', price: '0', cost: '0'
-    })
+    setItemForm(defaultItemForm())
     setShowItemForm(true)
   }
 
@@ -332,6 +422,7 @@ function App() {
       name: item.name,
       sku: item.sku,
       category: item.category,
+      subCategory: item.subCategory ?? '',
       quantity: String(item.quantity),
       minimum: String(item.minimum),
       price: String(item.price),
@@ -353,6 +444,7 @@ function App() {
       name: itemForm.name.trim(),
       sku: itemForm.sku.trim(),
       category: itemForm.category,
+      subCategory: itemForm.subCategory,
       quantity: Math.max(0, Number(itemForm.quantity)),
       minimum: Math.max(0, Number(itemForm.minimum)),
       price: Math.max(0, Number(itemForm.price)),
@@ -373,6 +465,10 @@ function App() {
   }
 
   const deleteItem = (id: number) => {
+    if (!can.deleteItems) {
+      notify('Only an Admin can delete items.')
+      return
+    }
     if (!window.confirm('Are you sure you want to delete this item?')) return
     setItems(previous => previous.filter(item => item.id !== id))
     notify('Item deleted.')
@@ -428,30 +524,125 @@ function App() {
     notify(`${type} recorded successfully.`)
   }
 
-  const addCategory = (event: FormEvent<HTMLFormElement>) => {
+  // Categories (backend API)
+  const addCategory = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const name = categoryName.trim()
+    if (!can.manageCategories) {
+      notify('Only an Admin can add categories.')
+      return
+    }
 
-    if (!name) return
-    if (categories.some(category => category.toLowerCase() === name.toLowerCase())) {
+    const name = categoryForm.name.trim()
+    const description = categoryForm.description.trim()
+
+    if (!name) {
+      notify('Category name is required.')
+      return
+    }
+    if (categories.some(category => category.name.toLowerCase() === name.toLowerCase())) {
       notify('This category already exists.')
       return
     }
 
-    setCategories(previous => [...previous, name])
-    setCategoryName('')
-    notify('Category added.')
+    try {
+      await api.addCategory(name, description || undefined)
+      setCategoryForm({ name: '', description: '' })
+      await loadCatalog()
+      notify('Category added.')
+    } catch (error) {
+      notify(apiMessage(error, 'Could not add the category.'))
+    }
   }
 
-  const deleteCategory = (name: string) => {
-    if (items.some(item => item.category === name)) {
+  const deleteCategory = async (category: Category) => {
+    if (!can.manageCategories) {
+      notify('Only an Admin can delete categories.')
+      return
+    }
+    if (items.some(item => item.category === category.name)) {
       notify('This category is being used by an item.')
       return
     }
-    setCategories(previous => previous.filter(category => category !== name))
-    notify('Category deleted.')
+    try {
+      await api.deleteCategory(category.id)
+      await loadCatalog()
+      notify('Category deleted.')
+    } catch (error) {
+      notify(apiMessage(error, 'Could not delete the category.'))
+    }
   }
 
+  // SubCategories (backend API)
+  const openSubForm = (categoryId?: string) => {
+    if (!can.manageCategories) {
+      notify('Only an Admin can add subcategories.')
+      return
+    }
+    if (categories.length === 0) {
+      notify('Create a category first.')
+      return
+    }
+    setSubForm({
+      categoryId: categoryId ?? categories[0].id,
+      name: '',
+      description: ''
+    })
+    setShowSubForm(true)
+  }
+
+  const addSubCategory = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    const categoryId = subForm.categoryId
+    const name = subForm.name.trim()
+    const description = subForm.description.trim()
+
+    if (!categoryId) {
+      notify('Please choose a category.')
+      return
+    }
+    if (!name) {
+      notify('Subcategory name is required.')
+      return
+    }
+    if (subCategories.some(entry =>
+      entry.categoryId === categoryId &&
+      entry.name.toLowerCase() === name.toLowerCase()
+    )) {
+      notify('This subcategory already exists in this category.')
+      return
+    }
+
+    try {
+      await api.addSubCategory(categoryId, name, description || undefined)
+      setShowSubForm(false)
+      await loadCatalog()
+      notify('Subcategory added.')
+    } catch (error) {
+      notify(apiMessage(error, 'Could not add the subcategory.'))
+    }
+  }
+
+  const deleteSubCategory = async (sub: SubCategory) => {
+    if (!can.manageCategories) {
+      notify('Only an Admin can delete subcategories.')
+      return
+    }
+    const parent = categories.find(category => category.id === sub.categoryId)
+    if (items.some(item => item.category === parent?.name && item.subCategory === sub.name)) {
+      notify('This subcategory is being used by an item.')
+      return
+    }
+    try {
+      await api.deleteSubCategory(sub.id)
+      await loadCatalog()
+      notify('Subcategory deleted.')
+    } catch (error) {
+      notify(apiMessage(error, 'Could not delete the subcategory.'))
+    }
+  }
+
+  // Suppliers
   const addSupplier = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
@@ -476,15 +667,7 @@ function App() {
     notify('Supplier deleted.')
   }
 
-  const exportCSV = () => {
-    const rows = [
-      ['Name', 'SKU', 'Category', 'Quantity', 'Minimum Stock', 'Selling Price', 'Cost'],
-      ...items.map(item => [
-        item.name, item.sku, item.category, item.quantity,
-        item.minimum, item.price, item.cost
-      ])
-    ]
-
+  const downloadCSV = (rows: (string | number)[][], filename: string) => {
     const csv = rows.map(row =>
       row.map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')
     ).join('\n')
@@ -493,32 +676,30 @@ function App() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = 'tinydepot-inventory.csv'
+    link.download = filename
     link.click()
     URL.revokeObjectURL(url)
+  }
+
+  const exportCSV = () => {
+    downloadCSV([
+      ['Name', 'SKU', 'Category', 'Subcategory', 'Quantity', 'Minimum Stock', 'Selling Price', 'Cost'],
+      ...items.map(item => [
+        item.name, item.sku, item.category, item.subCategory ?? '',
+        item.quantity, item.minimum, item.price, item.cost
+      ])
+    ], 'tinydepot-inventory.csv')
     notify('Inventory CSV exported.')
   }
 
   const exportTransactions = () => {
-    const rows = [
+    downloadCSV([
       ['Date', 'Item', 'Type', 'Quantity', 'Details'],
       ...transactions.map(transaction => [
         transaction.date, transaction.itemName,
         transaction.type, transaction.quantity, transaction.detail
       ])
-    ]
-
-    const csv = rows.map(row =>
-      row.map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')
-    ).join('\n')
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'tinydepot-transactions.csv'
-    link.click()
-    URL.revokeObjectURL(url)
+    ], 'tinydepot-transactions.csv')
     notify('Transactions exported.')
   }
 
@@ -530,7 +711,10 @@ function App() {
 
   const muted = 'text-sm text-slate-500 dark:text-slate-400'
 
-  // Reusable statistics card
+  // NOTE: the helpers below are called as plain functions (e.g. {ItemTable()})
+  // instead of <ItemTable />. Components declared inside App are re-created on
+  // every render, which would unmount inputs and make them lose focus while typing.
+
   function Stat({
     title, value, icon: Icon, color, note
   }: {
@@ -570,9 +754,11 @@ function App() {
             <button onClick={exportCSV} className={buttonSecondary}>
               <Download size={16} /> Export
             </button>
-            <button onClick={openAddItem} className={buttonPrimary}>
-              <Plus size={16} /> Add Item
-            </button>
+            {can.manageItems && (
+              <button onClick={openAddItem} className={buttonPrimary}>
+                <Plus size={16} /> Add Item
+              </button>
+            )}
           </div>
         </div>
 
@@ -582,23 +768,24 @@ function App() {
             <input
               value={search}
               onChange={event => setSearch(event.target.value)}
-              placeholder="Search name, SKU or category..."
+              placeholder="Search name, SKU, category or subcategory..."
               className={`${inputClass} pl-10`}
             />
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[750px] text-left text-sm">
+          <table className="w-full min-w-[850px] text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
               <tr>
                 <th className="px-5 py-3">Item</th>
                 <th className="px-5 py-3">SKU</th>
                 <th className="px-5 py-3">Category</th>
+                <th className="px-5 py-3">Subcategory</th>
                 <th className="px-5 py-3">Quantity</th>
                 <th className="px-5 py-3">Selling Price</th>
                 <th className="px-5 py-3">Status</th>
-                <th className="px-5 py-3">Actions</th>
+                {(can.manageItems || can.deleteItems) && <th className="px-5 py-3">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -609,6 +796,7 @@ function App() {
                   </td>
                   <td className="px-5 py-4">{item.sku}</td>
                   <td className="px-5 py-4">{item.category}</td>
+                  <td className="px-5 py-4">{item.subCategory || '—'}</td>
                   <td className="px-5 py-4 font-semibold">{item.quantity}</td>
                   <td className="px-5 py-4">{money(item.price, currency)}</td>
                   <td className="px-5 py-4">
@@ -620,21 +808,27 @@ function App() {
                       <span className="rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-700">In stock</span>
                     )}
                   </td>
-                  <td className="px-5 py-4">
-                    <div className="flex gap-2">
-                      <button onClick={() => openEditItem(item)} className="rounded-lg p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-800" title="Edit item">
-                        <Pencil size={16} />
-                      </button>
-                      <button onClick={() => deleteItem(item.id)} className="rounded-lg p-2 text-red-500 hover:bg-red-50 dark:hover:bg-slate-800" title="Delete item">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </td>
+                  {(can.manageItems || can.deleteItems) && (
+                    <td className="px-5 py-4">
+                      <div className="flex gap-2">
+                        {can.manageItems && (
+                          <button onClick={() => openEditItem(item)} className="rounded-lg p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-800" title="Edit item">
+                            <Pencil size={16} />
+                          </button>
+                        )}
+                        {can.deleteItems && (
+                          <button onClick={() => deleteItem(item.id)} className="rounded-lg p-2 text-red-500 hover:bg-red-50 dark:hover:bg-slate-800" title="Delete item">
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
               {filteredItems.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-10 text-center text-slate-500">
+                  <td colSpan={8} className="px-5 py-10 text-center text-slate-500">
                     No items found.
                   </td>
                 </tr>
@@ -653,7 +847,7 @@ function App() {
         <p className={`${muted} mb-5`}>Enter the details of this inventory movement.</p>
         <form onSubmit={event => recordMovement(event, type)} className="space-y-4">
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Select Item</label>
+            <label className={labelClass}>Select Item</label>
             <select
               className={inputClass}
               value={selectedItem}
@@ -669,7 +863,7 @@ function App() {
             </select>
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Quantity</label>
+            <label className={labelClass}>Quantity</label>
             <input
               type="number"
               min="1"
@@ -680,7 +874,7 @@ function App() {
             />
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Notes / Reference</label>
+            <label className={labelClass}>Notes / Reference</label>
             <input
               className={inputClass}
               value={movementDetail}
@@ -740,7 +934,10 @@ function App() {
   }
 
   function renderPage() {
-    switch (page) {
+    // Safety net: never render a page the current role cannot open.
+    const activePage: Page = allowedPages.includes(page) ? page : 'Dashboard'
+
+    switch (activePage) {
       case 'Dashboard':
         return (
           <div className="space-y-6">
@@ -750,10 +947,10 @@ function App() {
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <Stat title="Total Items" value={String(items.length)} icon={Package} color="bg-blue-100 text-blue-700" note="Different products in inventory" />
-              <Stat title="Total Stock Units" value={String(totalUnits)} icon={Boxes} color="bg-indigo-100 text-indigo-700" note="Units currently available" />
-              <Stat title="Low Stock Items" value={String(lowItems.length)} icon={AlertTriangle} color="bg-amber-100 text-amber-700" note="Items requiring attention" />
-              <Stat title="Inventory Value" value={money(inventoryValue, currency)} icon={CircleDollarSign} color="bg-green-100 text-green-700" note="Based on item purchase costs" />
+              {Stat({ title: 'Total Items', value: String(items.length), icon: Package, color: 'bg-blue-100 text-blue-700', note: 'Different products in inventory' })}
+              {Stat({ title: 'Total Stock Units', value: String(totalUnits), icon: Boxes, color: 'bg-indigo-100 text-indigo-700', note: 'Units currently available' })}
+              {Stat({ title: 'Low Stock Items', value: String(lowItems.length), icon: AlertTriangle, color: 'bg-amber-100 text-amber-700', note: 'Items requiring attention' })}
+              {Stat({ title: 'Inventory Value', value: money(inventoryValue, currency), icon: CircleDollarSign, color: 'bg-green-100 text-green-700', note: 'Based on item purchase costs' })}
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
@@ -803,23 +1000,29 @@ function App() {
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <button onClick={() => setPage('Stock In')} className={buttonPrimary}><ArrowDownToLine size={16} /> Stock In</button>
-              <button onClick={() => setPage('Stock Out')} className={buttonSecondary}><ArrowUpFromLine size={16} /> Stock Out</button>
-              <button onClick={openAddItem} className={buttonSecondary}><Plus size={16} /> Add New Item</button>
+              {allowedPages.includes('Stock In') && (
+                <button onClick={() => setPage('Stock In')} className={buttonPrimary}><ArrowDownToLine size={16} /> Stock In</button>
+              )}
+              {allowedPages.includes('Stock Out') && (
+                <button onClick={() => setPage('Stock Out')} className={buttonSecondary}><ArrowUpFromLine size={16} /> Stock Out</button>
+              )}
+              {can.manageItems && (
+                <button onClick={openAddItem} className={buttonSecondary}><Plus size={16} /> Add New Item</button>
+              )}
             </div>
 
-            <TransactionsTable />
+            {TransactionsTable()}
           </div>
         )
 
       case 'Items':
-        return <ItemTable />
+        return ItemTable()
 
       case 'Stock In':
-        return <MovementForm type="Stock In" />
+        return MovementForm({ type: 'Stock In' })
 
       case 'Stock Out':
-        return <MovementForm type="Stock Out" />
+        return MovementForm({ type: 'Stock Out' })
 
       case 'Transfers':
         return (
@@ -828,34 +1031,117 @@ function App() {
               <h2 className={heading}>Stock Transfers</h2>
               <p className={muted}>Record stock movements between locations.</p>
             </div>
-            <MovementForm type="Transfer" />
-            <TransactionsTable />
+            {MovementForm({ type: 'Transfer' })}
+            {TransactionsTable()}
           </div>
         )
 
       case 'Categories':
         return (
           <div className="space-y-5">
-            <div>
-              <h2 className={heading}>Categories</h2>
-              <p className={muted}>Organise your inventory into categories.</p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className={heading}>Categories</h2>
+                <p className={muted}>Organise your inventory into categories and subcategories.</p>
+              </div>
+              {can.manageCategories && (
+                <button onClick={() => openSubForm()} className={buttonSecondary}>
+                  <Layers size={16} /> SubCategories
+                </button>
+              )}
             </div>
-            <div className={`${card} max-w-xl`}>
-              <form onSubmit={addCategory} className="flex flex-col gap-3 sm:flex-row">
-                <input className={inputClass} placeholder="Enter category name" value={categoryName} onChange={event => setCategoryName(event.target.value)} />
-                <button type="submit" className={buttonPrimary}><Plus size={16} /> Add Category</button>
-              </form>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {categories.map(category => (
-                <div key={category} className={`${card} flex items-center justify-between`}>
+
+            {can.manageCategories ? (
+              <div className={`${card} max-w-xl`}>
+                <form onSubmit={addCategory} className="space-y-3">
                   <div>
-                    <p className="font-semibold text-slate-900 dark:text-white">{category}</p>
-                    <p className={muted}>{items.filter(item => item.category === category).length} items</p>
+                    <label className={labelClass}>
+                      Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      className={inputClass}
+                      placeholder="Enter category name"
+                      value={categoryForm.name}
+                      onChange={event => setCategoryForm({ ...categoryForm, name: event.target.value })}
+                      required
+                    />
                   </div>
-                  <button onClick={() => deleteCategory(category)} className="rounded-lg p-2 text-red-500 hover:bg-red-50 dark:hover:bg-slate-800"><Trash2 size={17} /></button>
-                </div>
-              ))}
+                  <div>
+                    <label className={labelClass}>
+                      Description <span className="text-xs font-normal text-slate-400">(optional)</span>
+                    </label>
+                    <textarea
+                      rows={2}
+                      className={inputClass}
+                      placeholder="Short description of this category"
+                      value={categoryForm.description}
+                      onChange={event => setCategoryForm({ ...categoryForm, description: event.target.value })}
+                    />
+                  </div>
+                  <button type="submit" className={buttonPrimary}><Plus size={16} /> Add Category</button>
+                </form>
+              </div>
+            ) : (
+              <p className={muted}>Your role ({role}) can view categories but not change them.</p>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {categories.map(category => {
+                const children = subCategories.filter(sub => sub.categoryId === category.id)
+                return (
+                  <div key={category.id} className={card}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-slate-900 dark:text-white">{category.name}</p>
+                        <p className={muted}>
+                          {items.filter(item => item.category === category.name).length} items
+                        </p>
+                        {category.description && (
+                          <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{category.description}</p>
+                        )}
+                      </div>
+                      {can.manageCategories && (
+                        <button onClick={() => deleteCategory(category)} className="rounded-lg p-2 text-red-500 hover:bg-red-50 dark:hover:bg-slate-800" title="Delete category">
+                          <Trash2 size={17} />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                          Subcategories ({children.length})
+                        </p>
+                        {can.manageCategories && (
+                          <button onClick={() => openSubForm(category.id)} className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700">
+                            <Plus size={13} /> Add
+                          </button>
+                        )}
+                      </div>
+                      {children.length === 0 ? (
+                        <p className="text-xs text-slate-400">No subcategories yet.</p>
+                      ) : (
+                        <ul className="space-y-1.5">
+                          {children.map(sub => (
+                            <li key={sub.id} className="flex items-start justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800">
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-slate-800 dark:text-white">{sub.name}</p>
+                                {sub.description && <p className="text-xs text-slate-500 dark:text-slate-400">{sub.description}</p>}
+                              </div>
+                              {can.manageCategories && (
+                                <button onClick={() => deleteSubCategory(sub)} className="shrink-0 text-red-500 hover:text-red-600" title="Delete subcategory">
+                                  <Trash2 size={14} />
+                                </button>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+              {categories.length === 0 && <p className={muted}>No categories yet.</p>}
             </div>
           </div>
         )
@@ -867,15 +1153,17 @@ function App() {
               <h2 className={heading}>Suppliers</h2>
               <p className={muted}>Keep track of your supplier information.</p>
             </div>
-            <div className={`${card} max-w-2xl`}>
-              <h3 className={`${heading} mb-4`}>Add Supplier</h3>
-              <form onSubmit={addSupplier} className="grid gap-3 sm:grid-cols-2">
-                <input className={inputClass} placeholder="Supplier name" value={supplierForm.name} onChange={event => setSupplierForm({ ...supplierForm, name: event.target.value })} required />
-                <input className={inputClass} placeholder="Phone / Contact" value={supplierForm.contact} onChange={event => setSupplierForm({ ...supplierForm, contact: event.target.value })} />
-                <input className={inputClass} type="email" placeholder="Email address" value={supplierForm.email} onChange={event => setSupplierForm({ ...supplierForm, email: event.target.value })} />
-                <button type="submit" className={buttonPrimary}><Plus size={16} /> Add Supplier</button>
-              </form>
-            </div>
+            {can.manageSuppliers && (
+              <div className={`${card} max-w-2xl`}>
+                <h3 className={`${heading} mb-4`}>Add Supplier</h3>
+                <form onSubmit={addSupplier} className="grid gap-3 sm:grid-cols-2">
+                  <input className={inputClass} placeholder="Supplier name" value={supplierForm.name} onChange={event => setSupplierForm({ ...supplierForm, name: event.target.value })} required />
+                  <input className={inputClass} placeholder="Phone / Contact" value={supplierForm.contact} onChange={event => setSupplierForm({ ...supplierForm, contact: event.target.value })} />
+                  <input className={inputClass} type="email" placeholder="Email address" value={supplierForm.email} onChange={event => setSupplierForm({ ...supplierForm, email: event.target.value })} />
+                  <button type="submit" className={buttonPrimary}><Plus size={16} /> Add Supplier</button>
+                </form>
+              </div>
+            )}
             <div className="grid gap-3 md:grid-cols-2">
               {suppliers.map(supplier => (
                 <div key={supplier.id} className={`${card} flex items-start justify-between`}>
@@ -884,7 +1172,9 @@ function App() {
                     <p className={muted}>{supplier.contact || 'No contact added'}</p>
                     <p className={muted}>{supplier.email || 'No email added'}</p>
                   </div>
-                  <button onClick={() => deleteSupplier(supplier.id)} className="rounded-lg p-2 text-red-500 hover:bg-red-50 dark:hover:bg-slate-800"><Trash2 size={17} /></button>
+                  {can.manageSuppliers && (
+                    <button onClick={() => deleteSupplier(supplier.id)} className="rounded-lg p-2 text-red-500 hover:bg-red-50 dark:hover:bg-slate-800"><Trash2 size={17} /></button>
+                  )}
                 </div>
               ))}
               {suppliers.length === 0 && <p className={muted}>No suppliers added yet.</p>}
@@ -900,10 +1190,10 @@ function App() {
               <p className={muted}>Review your inventory performance and activity.</p>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <Stat title="Total Items" value={String(items.length)} icon={Package} color="bg-blue-100 text-blue-700" note="Registered products" />
-              <Stat title="Stock Units" value={String(totalUnits)} icon={Boxes} color="bg-indigo-100 text-indigo-700" note="Available units" />
-              <Stat title="Transactions" value={String(transactions.length)} icon={Activity} color="bg-purple-100 text-purple-700" note="Recorded movements" />
-              <Stat title="Low Stock" value={String(lowItems.length)} icon={AlertTriangle} color="bg-amber-100 text-amber-700" note="Items needing restock" />
+              {Stat({ title: 'Total Items', value: String(items.length), icon: Package, color: 'bg-blue-100 text-blue-700', note: 'Registered products' })}
+              {Stat({ title: 'Stock Units', value: String(totalUnits), icon: Boxes, color: 'bg-indigo-100 text-indigo-700', note: 'Available units' })}
+              {Stat({ title: 'Transactions', value: String(transactions.length), icon: Activity, color: 'bg-purple-100 text-purple-700', note: 'Recorded movements' })}
+              {Stat({ title: 'Low Stock', value: String(lowItems.length), icon: AlertTriangle, color: 'bg-amber-100 text-amber-700', note: 'Items needing restock' })}
             </div>
             <div className={card}>
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -933,7 +1223,7 @@ function App() {
                 ))}
               </div>
             </div>
-            <TransactionsTable />
+            {TransactionsTable()}
           </div>
         )
 
@@ -1005,15 +1295,16 @@ function App() {
             </div>
             <div className={card}>
               <h3 className={`${heading} mb-4`}>Store Information</h3>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Store Name</label>
-              <input className={inputClass} value={storeName} onChange={event => setStoreName(event.target.value)} />
-              <label className="mb-1.5 mt-4 block text-sm font-medium text-slate-700 dark:text-slate-300">Currency</label>
+              <label className={labelClass}>Store Name</label>
+              <input className={inputClass} value={storeName} onChange={event => setStoreName(event.target.value)} disabled={role !== 'Admin'} />
+              <label className={`${labelClass} mt-4`}>Currency</label>
               <select className={inputClass} value={currency} onChange={event => setCurrency(event.target.value)}>
                 <option value="TRY">Turkish Lira (TRY)</option>
                 <option value="USD">US Dollar (USD)</option>
                 <option value="EUR">Euro (EUR)</option>
                 <option value="GBP">British Pound (GBP)</option>
               </select>
+              {role !== 'Admin' && <p className={`${muted} mt-2 text-xs`}>Only an Admin can rename the store.</p>}
             </div>
             <div className={card}>
               <h3 className={`${heading} mb-4`}>Appearance</h3>
@@ -1032,9 +1323,14 @@ function App() {
               <h3 className={`${heading} mb-2`}>Account</h3>
               <p className={muted}>{currentUser?.name}</p>
               <p className={muted}>{currentUser?.email}</p>
-              <button onClick={handleSignOut} className="mt-4 inline-flex items-center gap-2 rounded-lg border border-red-200 px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950">
-                <LogOut size={16} /> Sign Out
-              </button>
+              <p className="mt-2 inline-block rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                {role}
+              </p>
+              <div>
+                <button onClick={handleSignOut} className="mt-4 inline-flex items-center gap-2 rounded-lg border border-red-200 px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950">
+                  <LogOut size={16} /> Sign Out
+                </button>
+              </div>
             </div>
           </div>
         )
@@ -1042,6 +1338,14 @@ function App() {
       default:
         return null
     }
+  }
+
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-500 dark:bg-slate-950">
+        Loading...
+      </div>
+    )
   }
 
   // SIGN IN AND CREATE ACCOUNT SCREENS
@@ -1093,11 +1397,11 @@ function App() {
                 </div>
                 <form onSubmit={handleSignIn} className="space-y-4">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Email Address</label>
+                    <label className={labelClass}>Email Address</label>
                     <input type="email" className={inputClass} placeholder="you@example.com" value={authEmail} onChange={event => setAuthEmail(event.target.value)} required />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Password</label>
+                    <label className={labelClass}>Password</label>
                     <input type="password" className={inputClass} placeholder="Enter your password" value={authPassword} onChange={event => setAuthPassword(event.target.value)} required />
                   </div>
 
@@ -1127,19 +1431,22 @@ function App() {
                 </div>
                 <form onSubmit={handleSignUp} className="space-y-4">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Full Name</label>
+                    <label className={labelClass}>Full Name</label>
                     <input className={inputClass} placeholder="Enter your full name" value={authName} onChange={event => setAuthName(event.target.value)} required />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Email Address</label>
+                    <label className={labelClass}>Email Address</label>
                     <input type="email" className={inputClass} placeholder="you@example.com" value={authEmail} onChange={event => setAuthEmail(event.target.value)} required />
                   </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Your role is assigned by an administrator after you sign up.
+                  </p>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Password</label>
+                    <label className={labelClass}>Password</label>
                     <input type="password" minLength={6} className={inputClass} placeholder="At least 6 characters" value={authPassword} onChange={event => setAuthPassword(event.target.value)} required />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Confirm Password</label>
+                    <label className={labelClass}>Confirm Password</label>
                     <input type="password" minLength={6} className={inputClass} placeholder="Enter your password again" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} required />
                   </div>
 
@@ -1174,6 +1481,10 @@ function App() {
     )
   }
 
+  const subOptionsForItem = subCategories.filter(sub =>
+    categories.find(category => category.id === sub.categoryId)?.name === itemForm.category
+  )
+
   // MAIN APPLICATION
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
@@ -1188,7 +1499,7 @@ function App() {
 
         <p className="mb-3 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Workspace</p>
         <nav className="flex-1 space-y-1">
-          {navigation.map(({ name, icon: Icon }) => (
+          {visibleNavigation.map(({ name, icon: Icon }) => (
             <button
               key={name}
               onClick={() => setPage(name)}
@@ -1200,11 +1511,13 @@ function App() {
           ))}
         </nav>
 
-        <button onClick={() => setPage('Upgrade')} className="mb-5 rounded-xl border border-blue-500/30 bg-blue-600/10 p-4 text-left transition hover:bg-blue-600/20">
-          <Sparkles size={20} className="mb-2 text-blue-400" />
-          <p className="text-sm font-semibold">Upgrade to Pro</p>
-          <p className="mt-1 text-xs text-slate-400">Explore more features.</p>
-        </button>
+        {canUpgrade && (
+          <button onClick={() => setPage('Upgrade')} className="mb-5 rounded-xl border border-blue-500/30 bg-blue-600/10 p-4 text-left transition hover:bg-blue-600/20">
+            <Sparkles size={20} className="mb-2 text-blue-400" />
+            <p className="text-sm font-semibold">Upgrade to Pro</p>
+            <p className="mt-1 text-xs text-slate-400">Explore more features.</p>
+          </button>
+        )}
 
         <div className="flex items-center gap-3 border-t border-slate-800 px-2 pt-5">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 text-sm font-bold">
@@ -1212,7 +1525,7 @@ function App() {
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{currentUser.name}</p>
-            <p className="truncate text-xs text-slate-400">Administrator</p>
+            <p className="truncate text-xs text-slate-400">{role}</p>
           </div>
           <button onClick={handleSignOut} title="Sign out" className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white">
             <LogOut size={17} />
@@ -1226,7 +1539,7 @@ function App() {
             <div className="rounded-lg bg-blue-600 p-2 text-white lg:hidden"><Boxes size={20} /></div>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{storeName}</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">{page}</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">{allowedPages.includes(page) ? page : 'Dashboard'}</p>
             </div>
           </div>
 
@@ -1258,7 +1571,7 @@ function App() {
 
             <div className="hidden text-right sm:block">
               <p className="text-xs font-semibold text-slate-800 dark:text-white">{currentUser.name}</p>
-              <p className="text-xs text-slate-500">Administrator</p>
+              <p className="text-xs text-slate-500">{role}</p>
             </div>
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
               {currentUser.name.slice(0, 2).toUpperCase()}
@@ -1271,12 +1584,14 @@ function App() {
 
         <div className="border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-800 dark:bg-slate-900 lg:hidden">
           <div className="flex gap-2 overflow-x-auto pb-1">
-            {navigation.map(({ name, icon: Icon }) => (
+            {visibleNavigation.map(({ name, icon: Icon }) => (
               <button key={name} onClick={() => setPage(name)} className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold ${page === name ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
                 <Icon size={15} /> {name}
               </button>
             ))}
-            <button onClick={() => setPage('Upgrade')} className="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">Upgrade</button>
+            {canUpgrade && (
+              <button onClick={() => setPage('Upgrade')} className="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">Upgrade</button>
+            )}
             <button onClick={handleSignOut} className="shrink-0 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-600 dark:bg-red-950">Sign Out</button>
           </div>
         </div>
@@ -1286,6 +1601,7 @@ function App() {
         </div>
       </main>
 
+      {/* Add / edit item */}
       {showItemForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
           <div className="my-auto w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
@@ -1298,38 +1614,113 @@ function App() {
             </div>
             <form onSubmit={saveItem} className="grid gap-4 sm:grid-cols-2">
               <div className="sm:col-span-2">
-                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Item Name</label>
+                <label className={labelClass}>Item Name</label>
                 <input className={inputClass} value={itemForm.name} onChange={event => setItemForm({ ...itemForm, name: event.target.value })} placeholder="Product name" required />
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">SKU</label>
+                <label className={labelClass}>SKU</label>
                 <input className={inputClass} value={itemForm.sku} onChange={event => setItemForm({ ...itemForm, sku: event.target.value })} placeholder="TD-009" required />
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Category</label>
-                <select className={inputClass} value={itemForm.category} onChange={event => setItemForm({ ...itemForm, category: event.target.value })}>
-                  {categories.map(category => <option key={category}>{category}</option>)}
+                <label className={labelClass}>Category</label>
+                <select
+                  className={inputClass}
+                  value={itemForm.category}
+                  onChange={event => setItemForm({ ...itemForm, category: event.target.value, subCategory: '' })}
+                >
+                  {categories.map(category => <option key={category.id} value={category.name}>{category.name}</option>)}
+                </select>
+              </div>
+              <div className="sm:col-span-2">
+                <label className={labelClass}>
+                  Subcategory <span className="text-xs font-normal text-slate-400">(optional)</span>
+                </label>
+                <select
+                  className={inputClass}
+                  value={itemForm.subCategory}
+                  onChange={event => setItemForm({ ...itemForm, subCategory: event.target.value })}
+                >
+                  <option value="">None</option>
+                  {subOptionsForItem.map(sub => <option key={sub.id} value={sub.name}>{sub.name}</option>)}
                 </select>
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Quantity</label>
+                <label className={labelClass}>Quantity</label>
                 <input type="number" min="0" className={inputClass} value={itemForm.quantity} onChange={event => setItemForm({ ...itemForm, quantity: event.target.value })} required />
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Minimum Stock</label>
+                <label className={labelClass}>Minimum Stock</label>
                 <input type="number" min="0" className={inputClass} value={itemForm.minimum} onChange={event => setItemForm({ ...itemForm, minimum: event.target.value })} required />
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Selling Price</label>
+                <label className={labelClass}>Selling Price</label>
                 <input type="number" min="0" step="0.01" className={inputClass} value={itemForm.price} onChange={event => setItemForm({ ...itemForm, price: event.target.value })} required />
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Purchase Cost</label>
+                <label className={labelClass}>Purchase Cost</label>
                 <input type="number" min="0" step="0.01" className={inputClass} value={itemForm.cost} onChange={event => setItemForm({ ...itemForm, cost: event.target.value })} required />
               </div>
               <div className="mt-2 flex justify-end gap-3 sm:col-span-2">
                 <button type="button" onClick={resetItemForm} className={buttonSecondary}>Cancel</button>
                 <button type="submit" className={buttonPrimary}><Check size={16} /> {editing !== null ? 'Save Changes' : 'Add Item'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add subcategory */}
+      {showSubForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
+          <div className="my-auto w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900 dark:text-white">Add Subcategory</h2>
+                <p className={muted}>Group items more precisely inside a category.</p>
+              </div>
+              <button onClick={() => setShowSubForm(false)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"><X size={20} /></button>
+            </div>
+            <form onSubmit={addSubCategory} className="space-y-4">
+              <div>
+                <label className={labelClass}>
+                  Category <span className="text-red-500">*</span>
+                </label>
+                <select
+                  className={inputClass}
+                  value={subForm.categoryId}
+                  onChange={event => setSubForm({ ...subForm, categoryId: event.target.value })}
+                  required
+                >
+                  {categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={labelClass}>
+                  Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  className={inputClass}
+                  placeholder="Enter subcategory name"
+                  value={subForm.name}
+                  onChange={event => setSubForm({ ...subForm, name: event.target.value })}
+                  required
+                />
+              </div>
+              <div>
+                <label className={labelClass}>
+                  Description <span className="text-xs font-normal text-slate-400">(optional)</span>
+                </label>
+                <textarea
+                  rows={3}
+                  className={inputClass}
+                  placeholder="Short description of this subcategory"
+                  value={subForm.description}
+                  onChange={event => setSubForm({ ...subForm, description: event.target.value })}
+                />
+              </div>
+              <div className="flex justify-end gap-3">
+                <button type="button" onClick={() => setShowSubForm(false)} className={buttonSecondary}>Cancel</button>
+                <button type="submit" className={buttonPrimary}><Check size={16} /> Add Subcategory</button>
               </div>
             </form>
           </div>
