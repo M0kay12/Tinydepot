@@ -1,75 +1,50 @@
-# React + TypeScript + Vite
+# TinyDepot
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+TinyDepot is a React + TypeScript + Vite frontend prototype for small-business inventory management.
 
-Currently, two official plugins are available:
+## Run locally in VS Code
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Open this folder in VS Code.
+2. Open **Terminal → New Terminal**.
+3. Run `npm install` once.
+4. Run `npm run dev`.
+5. Open the local address printed by Vite (normally `http://localhost:5173/`).
 
-## React Compiler
+The application is served locally by Vite. It does not need a ChatGPT URL or a hosted website.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Main files
 
-## Expanding the ESLint configuration
+- `index.html` — HTML document loaded by the browser; contains the root element and page title.
+- `src/main.tsx` — React entry point; imports global CSS and mounts the App component into `#root`.
+- `src/App.tsx` — Main React application: navigation, inventory pages, forms, state and interactions.
+- `src/index.css` — Global CSS and Tailwind CSS v4 setup.
+- `src/App.css` — Older stylesheet retained in the project; it is not imported by the current `main.tsx`.
+- `src/App.backup.tsx` / `src/App.backup.css` — Previous prototype copies; not used by the running app.
+- `vite.config.ts` — Vite and Tailwind plugin configuration.
+- `package.json` — Project dependencies and scripts.
+- `public/` — Static files served as-is, such as the favicon and icons.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Included frontend behaviour
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- Add, edit, delete, search and view inventory items.
+- Record stock-in, stock-out and transfer movements.
+- View categories and supplier contacts.
+- View low-stock notifications and recent stock activity.
+- Export inventory and transaction history as CSV.
+- Change store name, currency and dark mode.
+- Persist demo data in the current browser using `localStorage`.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+## Prototype limitations
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+- This is a frontend-only demo. Data is stored in the browser on the current device, not in a shared database.
+- AI Assistant is intentionally a placeholder and has no AI integration.
+- Upgrade is a demonstration screen; it does not process payments.
+- Supplier records are local demo contacts; no supplier portal or email integration is connected.
+- Financial reports are limited to actual recorded inventory movements; no fabricated revenue or profit figures are displayed.
 
-```
+## Available commands
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
-```
+- `npm run dev` — Start the development server.
+- `npm run build` — Type-check and build for production.
+- `npm run preview` — Preview the production build.
+- `npm run lint` — Run ESLint.
